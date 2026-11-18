@@ -1,0 +1,7 @@
+SEED = 42
+RAW_DIR = "data/"
+SPLITS_FILE = "splits.json"
+CAND_RADIUS_M = 75
+CAND_MAX_K = 10
+GAP_THRESHOLD_S = 5
+
