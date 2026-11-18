@@ -14,6 +14,12 @@
 - `decode(cands, probs, graph, params)` consumes row-aligned emission
   probabilities and candidate features including `gps_distance_m` for
   transitions. `params` includes `transition_scale_m`; `long_gap` starts an
-  independent decoding segment by default. It returns `obs_idx, pred_arc_id`
-  and includes `trip_id` when present in the input.
+  independent decoding segment by default. If no incoming transition is
+  possible, Viterbi finalizes the preceding path and restarts at the current
+  observation without fabricating a transition. It returns
+  `obs_idx, pred_arc_id` and includes `trip_id` when present in the input.
+- Student-test model/HMM evaluation reuses the saved model bundle and the
+  existing `sequence_metrics` and route-continuity helpers. It reports both
+  classifier-only top-1 and Viterbi predictions without retraining; evaluation
+  outputs use distinct `hmm_*` filenames and do not replace `dp_*` maps.
 

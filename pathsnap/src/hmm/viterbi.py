@@ -97,7 +97,7 @@ def _decode_segment(
     graph: DirectedRoadGraph,
     transition_scale_m: float,
 ) -> list[Any] | None:
-    """Decode one connected segment, returning None when no path exists."""
+    """Decode a segment, restarting after transitions with no valid path."""
     candidate_rows = {
         position: candidates.iloc[position].to_dict()
         for _, positions in segment
@@ -110,12 +110,34 @@ def _decode_segment(
     if any(not rows for rows in state_rows):
         return None
 
-    scores = log_emissions[state_rows[0]].copy()
+    def backtrack(
+        rows: Sequence[list[int]],
+        pointers: Sequence[np.ndarray],
+        final_scores: np.ndarray,
+    ) -> list[Any] | None:
+        final_index = int(np.argmax(final_scores))
+        if not math.isfinite(final_scores[final_index]):
+            return None
+        selected_rows = [rows[-1][final_index]]
+        for pointer_index in range(len(rows) - 1, 0, -1):
+            previous_index = int(pointers[pointer_index - 1][final_index])
+            if previous_index < 0:
+                return None
+            final_index = previous_index
+            selected_rows.append(rows[pointer_index - 1][final_index])
+        selected_rows.reverse()
+        return [candidates.iloc[position]["arc_id"] for position in selected_rows]
+
+    decoded_arcs: list[Any] = []
+    run_rows = [state_rows[0]]
     backpointers: list[np.ndarray] = []
+    scores = log_emissions[run_rows[0]].copy()
     for step in range(1, len(segment)):
         obs_idx, row_positions = segment[step]
-        observed_distance = _observed_distance(candidates, row_positions, obs_idx)
-        previous_rows = state_rows[step - 1]
+        observed_distance = _observed_distance(
+            candidates, row_positions, obs_idx
+        )
+        previous_rows = run_rows[-1]
         current_rows = state_rows[step]
         targets_by_source: dict[Any, set[Any]] = {}
         for previous_row in previous_rows:
@@ -158,22 +180,23 @@ def _decode_segment(
                     backpointer[current_index] = previous_index
 
         if not np.isfinite(next_scores).any():
-            return None
+            decoded_run = backtrack(run_rows, backpointers, scores)
+            if decoded_run is None:
+                return None
+            decoded_arcs.extend(decoded_run)
+            run_rows = [current_rows]
+            backpointers = []
+            scores = log_emissions[current_rows].copy()
+            continue
         scores = next_scores
+        run_rows.append(current_rows)
         backpointers.append(backpointer)
 
-    final_index = int(np.argmax(scores))
-    if not math.isfinite(scores[final_index]):
+    decoded_run = backtrack(run_rows, backpointers, scores)
+    if decoded_run is None:
         return None
-    selected_rows = [state_rows[-1][final_index]]
-    for step in range(len(segment) - 1, 0, -1):
-        previous_index = int(backpointers[step - 1][final_index])
-        if previous_index < 0:
-            return None
-        final_index = previous_index
-        selected_rows.append(state_rows[step - 1][final_index])
-    selected_rows.reverse()
-    return [candidates.iloc[position]["arc_id"] for position in selected_rows]
+    decoded_arcs.extend(decoded_run)
+    return decoded_arcs
 
 
 def decode(
@@ -194,9 +217,10 @@ def decode(
 
     The result contains one row per represented observation in chronological
     order. It has ``obs_idx`` and ``pred_arc_id`` columns, plus ``trip_id``
-    when that column exists in the input. If every path through a segment is
-    impossible, that segment receives null predictions rather than fabricated
-    transitions.
+    when that column exists in the input. If all transitions into an
+    observation are impossible, the best preceding path is finalized and
+    decoding restarts at that observation. No transition is fabricated across
+    the break.
     """
     if not isinstance(cands, pd.DataFrame):
         raise TypeError("cands must be a pandas DataFrame")

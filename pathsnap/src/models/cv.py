@@ -1,4 +1,4 @@
-# Owner: B. Group-aware CV runner that logs one row per model to a CSV.
+# group-aware CV runner that logs one row per model to a CSV.
 import os
 import json
 import time
