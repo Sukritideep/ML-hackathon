@@ -4,6 +4,7 @@ from pathlib import Path
 
 import pandas as pd
 
+from src.models.data import CANDIDATE_COLS
 from src.models.train_all import load_real
 
 
@@ -17,6 +18,11 @@ class TestRealLabelJoin(unittest.TestCase):
                     "obs_idx": [0, 0, 1, 2],
                     "arc_id": [10, 11, 12, 13],
                     "f_dist": [1.0, 2.0, 3.0, 4.0],
+                    "f_rank": [1.0, 2.0, 1.0, 1.0],
+                    "f_dist_gap": [0.0, 1.0, 0.0, 0.0],
+                    "f_proj": [0.1, 0.2, 0.3, 0.4],
+                    "f_bearing_diff": [0.0, 0.0, 0.0, 0.0],
+                    "f_speed": [1.0, 1.0, 1.0, 1.0],
                 }
             )
             labels_train = pd.DataFrame(
@@ -32,6 +38,11 @@ class TestRealLabelJoin(unittest.TestCase):
                     "obs_idx": [0, 0],
                     "arc_id": [20, 21],
                     "f_dist": [1.0, 2.0],
+                    "f_rank": [1.0, 2.0],
+                    "f_dist_gap": [0.0, 1.0],
+                    "f_proj": [0.3, 0.4],
+                    "f_bearing_diff": [0.0, 0.0],
+                    "f_speed": [1.0, 1.0],
                 }
             )
             labels_student = pd.DataFrame(
@@ -48,6 +59,8 @@ class TestRealLabelJoin(unittest.TestCase):
                 "labels_train": root / "labels_train.parquet",
                 "labels_student": root / "labels_student.parquet",
             }
+            self.assertEqual(list(candidates_train.columns), list(CANDIDATE_COLS))
+            self.assertEqual(list(candidates_student.columns), list(CANDIDATE_COLS))
             candidates_train.to_parquet(paths["candidates_train"], index=False)
             candidates_student.to_parquet(paths["candidates_student"], index=False)
             labels_train.to_parquet(paths["labels_train"], index=False)
@@ -60,15 +73,27 @@ class TestRealLabelJoin(unittest.TestCase):
                 paths["labels_student"],
             )
 
-        self.assertEqual(
-            train[["obs_idx", "arc_id", "label"]].values.tolist(),
-            [[0, 10, 0], [0, 11, 1], [1, 12, 0]],
-        )
-        self.assertEqual(
-            student[["obs_idx", "arc_id", "label"]].values.tolist(),
-            [[0, 20, 1], [0, 21, 0]],
-        )
-        self.assertEqual(train["true_arc_id"].tolist(), [11, 11, 99])
+            self.assertEqual(
+                train[["obs_idx", "arc_id", "label"]].values.tolist(),
+                [[0, 10, 0], [0, 11, 1]],
+            )
+            self.assertEqual(
+                student[["obs_idx", "arc_id", "label"]].values.tolist(),
+                [[0, 20, 1], [0, 21, 0]],
+            )
+            self.assertTrue(
+                train.groupby(["trip_id", "obs_idx"])["label"].max().eq(1).all()
+            )
+
+            labels_train = pd.concat([labels_train, labels_train.iloc[[0]]])
+            labels_train.to_parquet(paths["labels_train"], index=False)
+            with self.assertRaisesRegex(ValueError, "duplicate keys"):
+                load_real(
+                    paths["candidates_train"],
+                    paths["candidates_student"],
+                    paths["labels_train"],
+                    paths["labels_student"],
+                )
 
 
 if __name__ == "__main__":
