@@ -36,9 +36,12 @@ def test_same_arc_forward_movement_skips_graph_search(graph, monkeypatch) -> Non
 
     monkeypatch.setattr(graph, "shortest_node_distance", unexpected_search)
 
-    assert graph.distance_between_positions(
-        CandidatePosition(10, 2.0), CandidatePosition(10, 8.0)
-    ) == 6.0
+    assert (
+        graph.distance_between_positions(
+            CandidatePosition(10, 2.0), CandidatePosition(10, 8.0)
+        )
+        == 6.0
+    )
 
 
 def test_directly_connected_arcs_include_partial_start_and_end(graph) -> None:
@@ -55,6 +58,14 @@ def test_multi_arc_path_includes_complete_intermediate_arc(graph) -> None:
     )
 
     assert distance == 32.0
+
+
+def test_shortest_node_distances_batches_reachable_and_disconnected_targets(
+    graph,
+) -> None:
+    distances = graph.shortest_node_distances(1, [1, 2, 3, 8])
+
+    assert distances == {1: 0.0, 2: 10.0, 3: 30.0, 8: math.inf}
 
 
 def test_reverse_direction_without_directed_path_is_unreachable(graph) -> None:
@@ -82,12 +93,18 @@ def test_same_arc_backward_requires_a_directed_cycle(graph) -> None:
 
 
 def test_zero_length_arc_can_be_traversed(graph) -> None:
-    assert graph.distance_between_positions(
-        CandidatePosition(40, 0.0), CandidatePosition(41, 2.0)
-    ) == 2.0
-    assert graph.distance_between_positions(
-        CandidatePosition(40, 0.0), CandidatePosition(40, 0.0)
-    ) == 0.0
+    assert (
+        graph.distance_between_positions(
+            CandidatePosition(40, 0.0), CandidatePosition(41, 2.0)
+        )
+        == 2.0
+    )
+    assert (
+        graph.distance_between_positions(
+            CandidatePosition(40, 0.0), CandidatePosition(40, 0.0)
+        )
+        == 0.0
+    )
 
 
 def test_invalid_arc_and_out_of_range_progress_are_unreachable(graph) -> None:
@@ -110,9 +127,7 @@ def test_empty_graph_and_missing_candidates_are_safe() -> None:
             CandidatePosition(1, 0.0), CandidatePosition(2, 0.0)
         )
     )
-    assert math.isinf(
-        empty.distance_between_positions(None, CandidatePosition(2, 0.0))
-    )
+    assert math.isinf(empty.distance_between_positions(None, CandidatePosition(2, 0.0)))
 
 
 def test_dijkstra_supports_mixed_node_id_types() -> None:
@@ -157,16 +172,20 @@ def test_transition_log_probability_uses_configured_laplace_scale(graph) -> None
 
 
 def test_unreachable_or_missing_transition_has_negative_infinity(graph) -> None:
-    assert transition_log_probability(
-        graph,
-        CandidatePosition(10, 0.0),
-        CandidatePosition(50, 0.0),
-        observed_distance_m=10.0,
-        scale_m=5.0,
-    ) == -math.inf
-    assert transition_log_probability(
-        graph, None, CandidatePosition(10, 1.0), 10.0, 5.0
-    ) == -math.inf
+    assert (
+        transition_log_probability(
+            graph,
+            CandidatePosition(10, 0.0),
+            CandidatePosition(50, 0.0),
+            observed_distance_m=10.0,
+            scale_m=5.0,
+        )
+        == -math.inf
+    )
+    assert (
+        transition_log_probability(graph, None, CandidatePosition(10, 1.0), 10.0, 5.0)
+        == -math.inf
+    )
 
 
 @pytest.mark.parametrize("scale", [0.0, -1.0, math.inf, math.nan])

@@ -12,7 +12,10 @@ class ServerStatus(BaseModel):
 class HealthResponse(BaseModel):
     status: str
     trip_loader_available: bool
+    candidate_data_available: bool
     model_available: bool
+    hmm_available: bool
+    evaluation_available: bool
 
 
 class TripListResponse(BaseModel):
@@ -22,8 +25,6 @@ class TripListResponse(BaseModel):
 class TripResponse(BaseModel):
     trip_id: str
     gps: list[list[Any]]
-    nodes: list[list[Any]] | None = None
-    arcs: list[list[Any]] | None = None
 
 
 class EvaluationResponse(BaseModel):
@@ -31,5 +32,7 @@ class EvaluationResponse(BaseModel):
     original_gps: list[list[Any]]
     classifier_prediction: list[list[Any]] | None = None
     hmm_prediction: list[list[Any]] | None = None
+    classifier_route: list[list[float]] | None = None
+    hmm_route: list[list[float]] | None = None
     metrics: dict[str, Any] | None = None
     processing_time_seconds: float

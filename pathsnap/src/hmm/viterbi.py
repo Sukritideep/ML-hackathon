@@ -24,9 +24,7 @@ class ViterbiParams:
         try:
             scale = float(self.transition_scale_m)
         except (TypeError, ValueError, OverflowError) as exc:
-            raise ValueError(
-                "transition_scale_m must be finite and positive"
-            ) from exc
+            raise ValueError("transition_scale_m must be finite and positive") from exc
         if not math.isfinite(scale) or scale <= 0:
             raise ValueError("transition_scale_m must be finite and positive")
         if not isinstance(self.break_on_long_gap, bool):
@@ -74,9 +72,7 @@ def _observed_distance(
     candidates: pd.DataFrame, row_positions: Sequence[int], obs_idx: Any
 ) -> float:
     if "gps_distance_m" not in candidates.columns:
-        raise ValueError(
-            "candidates must include gps_distance_m to decode transitions"
-        )
+        raise ValueError("candidates must include gps_distance_m to decode transitions")
     distances = pd.to_numeric(
         candidates.iloc[list(row_positions)]["gps_distance_m"], errors="coerce"
     ).to_numpy(dtype=float, na_value=np.nan)
@@ -86,9 +82,7 @@ def _observed_distance(
             f"Observation {obs_idx!r} has no finite gps_distance_m for transition"
         )
     if (distances < 0).any():
-        raise ValueError(
-            f"Observation {obs_idx!r} has negative gps_distance_m"
-        )
+        raise ValueError(f"Observation {obs_idx!r} has negative gps_distance_m")
     if not np.allclose(distances, distances[0], rtol=1e-9, atol=1e-9):
         raise ValueError(
             f"Observation {obs_idx!r} has inconsistent gps_distance_m values"
@@ -104,6 +98,11 @@ def _decode_segment(
     transition_scale_m: float,
 ) -> list[Any] | None:
     """Decode one connected segment, returning None when no path exists."""
+    candidate_rows = {
+        position: candidates.iloc[position].to_dict()
+        for _, positions in segment
+        for position in positions
+    }
     state_rows = [
         [position for position in positions if math.isfinite(log_emissions[position])]
         for _, positions in segment
@@ -115,21 +114,37 @@ def _decode_segment(
     backpointers: list[np.ndarray] = []
     for step in range(1, len(segment)):
         obs_idx, row_positions = segment[step]
-        observed_distance = _observed_distance(
-            candidates, row_positions, obs_idx
-        )
+        observed_distance = _observed_distance(candidates, row_positions, obs_idx)
         previous_rows = state_rows[step - 1]
         current_rows = state_rows[step]
+        targets_by_source: dict[Any, set[Any]] = {}
+        for previous_row in previous_rows:
+            previous_endpoints = graph.arc_to_endpoints.get(
+                candidate_rows[previous_row]["arc_id"]
+            )
+            if previous_endpoints is None:
+                continue
+            source_node = previous_endpoints[1]
+            targets = targets_by_source.setdefault(source_node, set())
+            for current_row in current_rows:
+                current_endpoints = graph.arc_to_endpoints.get(
+                    candidate_rows[current_row]["arc_id"]
+                )
+                if current_endpoints is not None:
+                    targets.add(current_endpoints[0])
+        for source_node, target_nodes in targets_by_source.items():
+            graph.shortest_node_distances(source_node, tuple(target_nodes))
+
         next_scores = np.full(len(current_rows), -np.inf, dtype=float)
         backpointer = np.full(len(current_rows), -1, dtype=np.intp)
 
         for current_index, current_row in enumerate(current_rows):
-            current_candidate = candidates.iloc[current_row].to_dict()
+            current_candidate = candidate_rows[current_row]
             current_emission = log_emissions[current_row]
             for previous_index, previous_row in enumerate(previous_rows):
                 if not math.isfinite(scores[previous_index]):
                     continue
-                previous_candidate = candidates.iloc[previous_row].to_dict()
+                previous_candidate = candidate_rows[previous_row]
                 transition = transition_log_probability(
                     graph,
                     previous_candidate,
@@ -194,10 +209,7 @@ def decode(
     )
     if cands.empty:
         return pd.DataFrame(
-            {
-                column: pd.Series(dtype="object")
-                for column in output_columns
-            }
+            {column: pd.Series(dtype="object") for column in output_columns}
         )
     missing_columns = [
         column for column in ("obs_idx", "arc_id") if column not in cands
@@ -289,14 +301,11 @@ def decode(
             has_candidate = any(
                 math.isfinite(log_emissions[position]) for position in positions
             )
-            if (
-                current_segment
-                and (
-                    (options.break_on_long_gap and long_gap)
-                    or (
-                        previous_numeric_idx is not None
-                        and numeric_idx - previous_numeric_idx != 1
-                    )
+            if current_segment and (
+                (options.break_on_long_gap and long_gap)
+                or (
+                    previous_numeric_idx is not None
+                    and numeric_idx - previous_numeric_idx != 1
                 )
             ):
                 segments.append(current_segment)
@@ -329,10 +338,7 @@ def decode(
                 predictions.update({obs_idx: None for obs_idx, _ in segment})
             else:
                 predictions.update(
-                    {
-                        obs_idx: arc_id
-                        for (obs_idx, _), arc_id in zip(segment, decoded)
-                    }
+                    {obs_idx: arc_id for (obs_idx, _), arc_id in zip(segment, decoded)}
                 )
 
         for obs_idx in ordered_observations:

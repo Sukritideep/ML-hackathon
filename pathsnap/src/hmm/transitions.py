@@ -5,9 +5,9 @@ from __future__ import annotations
 import heapq
 import itertools
 import math
-from collections import defaultdict
+from collections import OrderedDict, defaultdict
 from collections.abc import Hashable, Mapping, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
@@ -22,6 +22,15 @@ class CandidatePosition:
 
     arc_id: Hashable
     progress_m: float
+
+
+@dataclass
+class _DijkstraSearch:
+    distances: dict[Hashable, float]
+    queue: list[tuple[float, int, Hashable]]
+    settled: set[Hashable] = field(default_factory=set)
+    sequence: Any = field(default_factory=itertools.count)
+    complete: bool = False
 
 
 def candidate_position_from_row(
@@ -74,8 +83,7 @@ class DirectedRoadGraph:
         hop_limit: int = DEFAULT_HOP_LIMIT,
     ) -> None:
         arrays = [
-            np.asarray(values)
-            for values in (arc_ids, from_nodes, to_nodes, length_m)
+            np.asarray(values) for values in (arc_ids, from_nodes, to_nodes, length_m)
         ]
         if any(array.ndim != 1 for array in arrays):
             raise ValueError("arc IDs, endpoints, and lengths must be 1D arrays")
@@ -85,22 +93,17 @@ class DirectedRoadGraph:
         ids, starts, ends, lengths = arrays
         self.arc_to_endpoints: dict[Hashable, tuple[Hashable, Hashable]] = {}
         self.arc_lengths_m: dict[Hashable, float] = {}
-        self._outgoing: dict[Hashable, list[tuple[Hashable, float]]] = defaultdict(
-            list
-        )
+        self._outgoing: dict[Hashable, list[tuple[Hashable, float]]] = defaultdict(list)
         self._node_distance_cache: dict[tuple[Hashable, Hashable], float] = {}
+        self._node_search_cache: OrderedDict[Hashable, _DijkstraSearch] = OrderedDict()
 
-        for arc_id, start_node, end_node, raw_length in zip(
-            ids, starts, ends, lengths
-        ):
+        for arc_id, start_node, end_node, raw_length in zip(ids, starts, ends, lengths):
             arc_id = _python_scalar(arc_id)
             start_node = _python_scalar(start_node)
             end_node = _python_scalar(end_node)
             length = float(raw_length)
             if not math.isfinite(length) or length < 0:
-                raise ValueError(
-                    f"Arc {arc_id!r} has invalid length {raw_length!r}"
-                )
+                raise ValueError(f"Arc {arc_id!r} has invalid length {raw_length!r}")
             try:
                 hash(arc_id)
                 hash(start_node)
@@ -133,7 +136,9 @@ class DirectedRoadGraph:
                     )
                 arrays = {key: data[key].copy() for key in required}
         except (OSError, ValueError) as exc:
-            raise ValueError(f"Could not load directed road graph from {path}: {exc}") from exc
+            raise ValueError(
+                f"Could not load directed road graph from {path}: {exc}"
+            ) from exc
         return cls(
             arrays["arc_id"],
             arrays["from_node"],
@@ -155,43 +160,82 @@ class DirectedRoadGraph:
         except TypeError:
             return None
 
-    def shortest_node_distance(
-        self, start_node: Hashable, end_node: Hashable
-    ) -> float:
+    def shortest_node_distance(self, start_node: Hashable, end_node: Hashable) -> float:
         """Return directed Dijkstra distance between nodes, or infinity."""
-        try:
-            cache_key = (start_node, end_node)
-            cached = self._node_distance_cache.get(cache_key)
-        except TypeError:
-            return math.inf
-        if cached is not None:
-            return cached
-        if start_node == end_node:
-            self._node_distance_cache[cache_key] = 0.0
-            return 0.0
+        return self.shortest_node_distances(start_node, (end_node,))[end_node]
 
-        distances = {start_node: 0.0}
-        sequence = itertools.count()
-        queue: list[tuple[float, int, Hashable]] = [
-            (0.0, next(sequence), start_node)
-        ]
-        while queue:
-            distance, _, node = heapq.heappop(queue)
-            if distance != distances.get(node):
+    def shortest_node_distances(
+        self, start_node: Hashable, end_nodes: Sequence[Hashable]
+    ) -> dict[Hashable, float]:
+        """Return directed distances from one node to several targets."""
+        try:
+            targets = set(end_nodes)
+            targets.discard(start_node)
+            cached = {
+                node: self._node_distance_cache[(start_node, node)]
+                for node in targets
+                if (start_node, node) in self._node_distance_cache
+            }
+        except TypeError:
+            return {node: math.inf for node in end_nodes}
+        unresolved = targets - cached.keys()
+        if not unresolved:
+            return {
+                node: 0.0 if node == start_node else cached[node] for node in end_nodes
+            }
+
+        search = self._node_search_cache.get(start_node)
+        if search is None:
+            sequence = itertools.count()
+            search = _DijkstraSearch(
+                distances={start_node: 0.0},
+                queue=[(0.0, next(sequence), start_node)],
+                sequence=sequence,
+            )
+            self._node_search_cache[start_node] = search
+            if len(self._node_search_cache) > 64:
+                self._node_search_cache.popitem(last=False)
+        else:
+            self._node_search_cache.move_to_end(start_node)
+
+        for node in tuple(unresolved):
+            if node in search.settled:
+                self._node_distance_cache[(start_node, node)] = search.distances[node]
+                unresolved.remove(node)
+            elif search.complete:
+                self._node_distance_cache[(start_node, node)] = math.inf
+                unresolved.remove(node)
+
+        while search.queue and unresolved:
+            distance, _, node = heapq.heappop(search.queue)
+            if distance != search.distances.get(node) or node in search.settled:
                 continue
-            if node == end_node:
-                self._node_distance_cache[cache_key] = distance
-                return distance
+            search.settled.add(node)
+            if node in unresolved:
+                self._node_distance_cache[(start_node, node)] = distance
+                unresolved.remove(node)
             for neighbor, edge_length in self._outgoing.get(node, ()):
                 next_distance = distance + edge_length
-                if next_distance < distances.get(neighbor, math.inf):
-                    distances[neighbor] = next_distance
+                if next_distance < search.distances.get(neighbor, math.inf):
+                    search.distances[neighbor] = next_distance
                     heapq.heappush(
-                        queue, (next_distance, next(sequence), neighbor)
+                        search.queue,
+                        (next_distance, next(search.sequence), neighbor),
                     )
 
-        self._node_distance_cache[cache_key] = math.inf
-        return math.inf
+        if not search.queue:
+            search.complete = True
+        for node in unresolved:
+            if search.complete:
+                self._node_distance_cache[(start_node, node)] = math.inf
+        return {
+            node: (
+                0.0
+                if node == start_node
+                else self._node_distance_cache.get((start_node, node), math.inf)
+            )
+            for node in end_nodes
+        }
 
     def distance_between_positions(
         self,
@@ -207,9 +251,7 @@ class DirectedRoadGraph:
         Invalid or missing candidates return infinity.
         """
         start_position = (
-            candidate_position_from_row(start)
-            if isinstance(start, Mapping)
-            else start
+            candidate_position_from_row(start) if isinstance(start, Mapping) else start
         )
         end_position = (
             candidate_position_from_row(end) if isinstance(end, Mapping) else end
@@ -246,14 +288,10 @@ class DirectedRoadGraph:
             if end_progress >= start_progress:
                 return end_progress - start_progress
 
-        middle_distance = self.shortest_node_distance(
-            start_end_node, end_start_node
-        )
+        middle_distance = self.shortest_node_distance(start_end_node, end_start_node)
         if math.isinf(middle_distance):
             return math.inf
-        return (
-            (start_length - start_progress) + middle_distance + end_progress
-        )
+        return (start_length - start_progress) + middle_distance + end_progress
 
 
 def transition_log_probability(
@@ -282,7 +320,6 @@ def transition_log_probability(
     )
     if not math.isfinite(network_distance):
         return -math.inf
-    return (
-        -abs(observed_distance_m - network_distance) / scale_m
-        - math.log(2.0 * scale_m)
+    return -abs(observed_distance_m - network_distance) / scale_m - math.log(
+        2.0 * scale_m
     )

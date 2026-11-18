@@ -1,3 +1,5 @@
+import logging
+
 from fastapi import FastAPI, HTTPException
 
 from .evaluation import (
@@ -10,13 +12,17 @@ from .evaluation import (
 from .pipeline import (
     InvalidTripError,
     PipelineUnavailableError,
+    candidate_data_available,
     evaluate_trip,
+    evaluation_available,
+    hmm_available,
     load_trip,
     model_available,
     permitted_trip_ids,
     trip_loader_available,
 )
 
+logger = logging.getLogger(__name__)
 
 app = FastAPI(
     title="PathSnap API",
@@ -29,7 +35,7 @@ app = FastAPI(
 def server_status() -> ServerStatus:
     return ServerStatus(
         status="running",
-        message="PathSnap API is ready. Use /docs for endpoint documentation.",
+        message="PathSnap API is running. Use /health to check pipeline readiness.",
     )
 
 
@@ -37,11 +43,16 @@ def server_status() -> ServerStatus:
 def health() -> HealthResponse:
     loader_ready = trip_loader_available()
     model_ready = model_available()
-    status = "ready" if loader_ready and model_ready else "degraded"
+    decoder_ready = hmm_available()
+    pipeline_ready = evaluation_available()
+    status = "ready" if pipeline_ready else "degraded"
     return HealthResponse(
         status=status,
         trip_loader_available=loader_ready,
+        candidate_data_available=candidate_data_available(),
         model_available=model_ready,
+        hmm_available=decoder_ready,
+        evaluation_available=pipeline_ready,
     )
 
 
@@ -52,7 +63,10 @@ def list_trips() -> TripListResponse:
     except PipelineUnavailableError as exc:
         raise HTTPException(status_code=503, detail=str(exc)) from exc
     except Exception as exc:
-        raise HTTPException(status_code=500, detail="Unable to load the evaluation trip list.") from exc
+        logger.exception("Unexpected error while loading evaluation trip IDs")
+        raise HTTPException(
+            status_code=500, detail="Unable to load the evaluation trip list."
+        ) from exc
 
 
 @app.get("/trips/{trip_id}", response_model=TripResponse)
@@ -60,31 +74,26 @@ def get_trip(trip_id: str) -> TripResponse:
     try:
         trip = load_trip(trip_id)
         gps = getattr(trip, "gps", None)
-        nodes = getattr(trip, "nodes", None)
-        arcs = getattr(trip, "arcs", None)
 
         if gps is None:
-            raise PipelineUnavailableError("Loaded trip does not contain GPS observations.")
+            raise PipelineUnavailableError(
+                "Loaded trip does not contain GPS observations."
+            )
 
-        def to_lists(value):
-            if hasattr(value, "tolist"):
-                return value.tolist()
-            if isinstance(value, list):
-                return value
-            return list(value)
-
+        gps_values = gps.tolist() if hasattr(gps, "tolist") else list(gps)
         return TripResponse(
             trip_id=trip_id,
-            gps=to_lists(gps),
-            nodes=to_lists(nodes) if nodes is not None else None,
-            arcs=to_lists(arcs) if arcs is not None else None,
+            gps=gps_values,
         )
     except InvalidTripError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
     except PipelineUnavailableError as exc:
         raise HTTPException(status_code=503, detail=str(exc)) from exc
     except Exception as exc:
-        raise HTTPException(status_code=500, detail="Unable to load the selected trip.") from exc
+        logger.exception("Unexpected error while loading trip %s", trip_id)
+        raise HTTPException(
+            status_code=500, detail="Unable to load the selected trip."
+        ) from exc
 
 
 @app.post("/evaluate/{trip_id}", response_model=EvaluationResponse)
@@ -97,4 +106,7 @@ def evaluate(trip_id: str) -> EvaluationResponse:
     except PipelineUnavailableError as exc:
         raise HTTPException(status_code=503, detail=str(exc)) from exc
     except Exception as exc:
-        raise HTTPException(status_code=500, detail="Unexpected evaluation pipeline failure.") from exc
+        logger.exception("Unexpected evaluation pipeline failure for trip %s", trip_id)
+        raise HTTPException(
+            status_code=500, detail="Unexpected evaluation pipeline failure."
+        ) from exc
