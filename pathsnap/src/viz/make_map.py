@@ -6,6 +6,7 @@ import argparse
 import html
 import json
 import math
+import os
 from pathlib import Path
 from typing import Any, Sequence
 
@@ -16,7 +17,9 @@ import pandas as pd
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 REPO_ROOT = PROJECT_ROOT.parent
-DEFAULT_DATA_ROOT = PROJECT_ROOT / "data" / "Student folder" / "Student folder"
+DEFAULT_DATA_ROOT = Path(
+    os.environ.get("PATHSNAP_DATA_DIR", PROJECT_ROOT / "data")
+).expanduser()
 DEFAULT_TRIPS = ["00000054", "00000033", "00000002", "00000001"]
 
 
