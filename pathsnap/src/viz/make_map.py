@@ -335,6 +335,245 @@ def generate_trip_map(
     return output_path, stats
 
 
+def _long_gap_flag(value: Any) -> bool:
+    if pd.isna(value):
+        return False
+    if isinstance(value, (bool, np.bool_)):
+        return bool(value)
+    if isinstance(value, (int, np.integer)) and value in (0, 1):
+        return bool(value)
+    if isinstance(value, str):
+        normalized = value.strip().lower()
+        if normalized in ("true", "1"):
+            return True
+        if normalized in ("false", "0", ""):
+            return False
+    raise ValueError(f"Invalid long_gap value: {value!r}")
+
+
+def generate_hmm_trip_map(
+    trip_id: str,
+    predictions: pd.DataFrame,
+    *,
+    repo_root: str | Path = REPO_ROOT,
+    data_root: str | Path = DEFAULT_DATA_ROOT,
+    output_dir: str | Path | None = None,
+    max_markers: int = 1500,
+    overwrite: bool = False,
+) -> tuple[Path, dict[str, Any]]:
+    """Map one student-test GPS trace, raw reference route, and HMM route."""
+    if isinstance(max_markers, bool) or max_markers < 1:
+        raise ValueError("max_markers must be a positive integer")
+    root = Path(repo_root)
+    dataset_root = Path(data_root)
+    trip_id = _trip_id(trip_id)
+    splits = json.loads((root / "splits.json").read_text(encoding="utf-8"))
+    student_ids = {_trip_id(value) for value in splits["student_test"]}
+    if trip_id not in student_ids:
+        raise ValueError(f"Trip {trip_id} is not listed in student_test")
+    required = {"trip_id", "obs_idx", "hmm_pred_arc_id"}
+    if missing := required - set(predictions.columns):
+        raise ValueError(f"Predictions are missing columns: {sorted(missing)}")
+    frame = predictions.copy()
+    frame["trip_id"] = frame["trip_id"].map(_trip_id)
+    if frame["trip_id"].nunique() != 1 or not frame["trip_id"].eq(trip_id).all():
+        raise ValueError(f"Predictions do not belong only to trip {trip_id}")
+    frame["obs_idx"] = pd.to_numeric(
+        frame["obs_idx"], errors="raise"
+    ).astype(np.int64)
+    if frame.duplicated(["trip_id", "obs_idx"]).any():
+        raise ValueError(f"Trip {trip_id} has duplicate prediction observations")
+    frame = frame.sort_values("obs_idx", kind="stable").reset_index(drop=True)
+
+    raw_trip_dir = dataset_root / "student_test" / trip_id
+    track = _read_whitespace(
+        raw_trip_dir / f"{trip_id}.track",
+        ["longitude", "latitude", "timestamp"],
+    )
+    nodes = _read_whitespace(
+        raw_trip_dir / f"{trip_id}.nodes", ["longitude", "latitude"]
+    )
+    arcs = _read_whitespace(
+        raw_trip_dir / f"{trip_id}.arcs", ["from_node", "to_node"]
+    )
+    route = _read_whitespace(raw_trip_dir / f"{trip_id}.route", ["arc_id"])
+    if frame["obs_idx"].tolist() != list(range(len(track))):
+        raise ValueError(
+            f"Trip {trip_id} predictions must cover every GPS observation exactly once"
+        )
+    if track.empty:
+        raise ValueError(f"Trip {trip_id} has no GPS observations")
+    if "long_gap" not in frame.columns:
+        frame["long_gap"] = False
+
+    track[["longitude", "latitude"]] = track[
+        ["longitude", "latitude"]
+    ].apply(pd.to_numeric, errors="raise")
+    nodes[["longitude", "latitude"]] = nodes[
+        ["longitude", "latitude"]
+    ].apply(pd.to_numeric, errors="raise")
+    arcs[["from_node", "to_node"]] = arcs[
+        ["from_node", "to_node"]
+    ].apply(pd.to_numeric, errors="raise").astype(np.int64)
+    route_ids = pd.to_numeric(route["arc_id"], errors="raise").astype(
+        np.int64
+    ).tolist()
+    reference_segments = _connected_segments(route_ids, nodes, arcs)
+
+    prediction_segments: list[list[int]] = []
+    current: list[int] = []
+    previous_obs: int | None = None
+    for row in frame.itertuples(index=False):
+        obs_idx = int(row.obs_idx)
+        if current and (
+            previous_obs is None
+            or obs_idx - previous_obs != 1
+            or _long_gap_flag(row.long_gap)
+        ):
+            prediction_segments.append(current)
+            current = []
+        prediction = row.hmm_pred_arc_id
+        if pd.isna(prediction):
+            if current:
+                prediction_segments.append(current)
+                current = []
+        else:
+            current.append(int(prediction))
+        previous_obs = obs_idx
+    if current:
+        prediction_segments.append(current)
+    hmm_segments = [
+        segment
+        for arc_segment in prediction_segments
+        for segment in _connected_segments(arc_segment, nodes, arcs)
+    ]
+
+    gps_coordinates = list(
+        zip(
+            track["latitude"].astype(float),
+            track["longitude"].astype(float),
+        )
+    )
+    center = [
+        float(track["latitude"].median()),
+        float(track["longitude"].median()),
+    ]
+    fmap = folium.Map(
+        location=center,
+        zoom_start=13,
+        tiles="OpenStreetMap",
+        control_scale=True,
+    )
+    folium.PolyLine(
+        gps_coordinates,
+        color="#1769aa",
+        weight=3,
+        opacity=0.8,
+        tooltip="Observed GPS trajectory",
+    ).add_to(folium.FeatureGroup(name="GPS trajectory").add_to(fmap))
+
+    reference_group = folium.FeatureGroup(name="Ground-truth reference route")
+    for segment in reference_segments:
+        folium.PolyLine(
+            segment,
+            color="#ff9800",
+            weight=4,
+            opacity=0.75,
+            tooltip="Ground-truth reference route",
+        ).add_to(reference_group)
+    reference_group.add_to(fmap)
+
+    hmm_group = folium.FeatureGroup(name="HMM-predicted route")
+    for segment in hmm_segments:
+        folium.PolyLine(
+            segment,
+            color="#188038",
+            weight=5,
+            opacity=0.9,
+            tooltip="HMM-predicted route",
+        ).add_to(hmm_group)
+    hmm_group.add_to(fmap)
+
+    null_indices = frame.loc[
+        frame["hmm_pred_arc_id"].isna(), "obs_idx"
+    ].astype(int).tolist()
+    disagreement_indices: list[int] = []
+    if "classifier_pred_arc_id" in frame.columns:
+        disagreement_indices = frame.loc[
+            frame["classifier_pred_arc_id"].notna()
+            & frame["hmm_pred_arc_id"].notna()
+            & frame["classifier_pred_arc_id"].ne(frame["hmm_pred_arc_id"]),
+            "obs_idx",
+        ].astype(int).tolist()
+    marker_group = folium.FeatureGroup(
+        name="Null HMM predictions / classifier disagreements"
+    )
+    for obs_idx in _marker_indices(
+        len(track), null_indices, disagreement_indices, max_markers
+    ):
+        row = frame.iloc[obs_idx]
+        is_null = pd.isna(row["hmm_pred_arc_id"])
+        is_disagreement = (
+            not is_null
+            and obs_idx in disagreement_indices
+        )
+        status = (
+            "Null HMM prediction"
+            if is_null
+            else "Classifier/HMM disagreement"
+            if is_disagreement
+            else "Sampled GPS observation"
+        )
+        latitude, longitude = gps_coordinates[obs_idx]
+        color = "red" if is_null else "purple" if is_disagreement else "blue"
+        folium.CircleMarker(
+            location=[latitude, longitude],
+            radius=4 if status != "Sampled GPS observation" else 2,
+            color=color,
+            fill=True,
+            fill_opacity=0.8,
+            popup=folium.Popup(
+                html.escape(
+                    f"obs_idx={obs_idx}; true_arc_id="
+                    f"{row.get('true_arc_id')}; classifier_arc_id="
+                    f"{row.get('classifier_pred_arc_id')}; "
+                    f"hmm_arc_id={row.get('hmm_pred_arc_id')}; status={status}"
+                ),
+                max_width=360,
+            ),
+        ).add_to(marker_group)
+    marker_group.add_to(fmap)
+    folium.Marker(gps_coordinates[0], tooltip="GPS start").add_to(fmap)
+    folium.Marker(gps_coordinates[-1], tooltip="GPS end").add_to(fmap)
+    folium.LayerControl(collapsed=False).add_to(fmap)
+
+    map_dir = Path(output_dir) if output_dir else root / "pathsnap" / "results" / "maps"
+    map_dir.mkdir(parents=True, exist_ok=True)
+    output_path = map_dir / f"hmm_trip_{trip_id}.html"
+    if output_path.exists() and not overwrite:
+        raise FileExistsError(
+            f"Map already exists; pass overwrite=True to replace it: {output_path}"
+        )
+    fmap.save(str(output_path))
+
+    valid_predictions = int(frame["hmm_pred_arc_id"].notna().sum())
+    return output_path, {
+        "trip_id": trip_id,
+        "partition": "student_test",
+        "gps_observations": len(track),
+        "ground_truth_route_arcs": len(route_ids),
+        "hmm_predicted_observations": valid_predictions,
+        "null_hmm_predictions": len(track) - valid_predictions,
+        "hmm_route_segments": len(hmm_segments),
+        "map_markers": len(
+            _marker_indices(
+                len(track), null_indices, disagreement_indices, max_markers
+            )
+        ),
+        "output_path": str(output_path),
+    }
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--repo-root", type=Path, default=REPO_ROOT)
