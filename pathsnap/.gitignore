@@ -7,4 +7,5 @@ __pycache__/
 .venv/
 *.joblib
 results/*.parquet
+/member_b_viva_guide.pdf
 

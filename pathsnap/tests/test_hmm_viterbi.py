@@ -143,7 +143,9 @@ def test_different_candidate_counts_and_single_candidate_states(graph) -> None:
     assert decoded["pred_arc_id"].tolist() == [10, 11]
 
 
-def test_unreachable_transitions_produce_nulls_not_fabricated_paths(graph) -> None:
+def test_unreachable_transition_restarts_decoding_without_fabricating_a_path(
+    graph,
+) -> None:
     candidates = pd.DataFrame(
         [
             _row("trip-a", 0, 10, np.nan),
@@ -158,7 +160,26 @@ def test_unreachable_transitions_produce_nulls_not_fabricated_paths(graph) -> No
         ViterbiParams(transition_scale_m=5.0),
     )
 
-    assert decoded["pred_arc_id"].tolist() == [None, None]
+    assert decoded["pred_arc_id"].tolist() == [10, 40]
+
+
+def test_viterbi_resumes_with_a_valid_path_after_unreachable_transition(graph) -> None:
+    candidates = pd.DataFrame(
+        [
+            _row("trip-a", 0, 10, np.nan),
+            _row("trip-a", 1, 40, 10.0),
+            _row("trip-a", 2, 41, 10.0),
+        ]
+    )
+
+    decoded = decode(
+        candidates,
+        [1.0, 1.0, 1.0],
+        graph,
+        ViterbiParams(transition_scale_m=5.0),
+    )
+
+    assert decoded["pred_arc_id"].tolist() == [10, 40, 41]
 
 
 def test_invalid_arc_and_zero_probability_candidates_are_excluded(graph) -> None:
