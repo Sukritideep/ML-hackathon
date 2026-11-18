@@ -1,0 +1,17 @@
+{
+  "study_name": "lgbm_logloss",
+  "completed_trials_total": 10,
+  "best_cv_log_loss": 0.13184995356492088,
+  "best_params": {
+    "max_depth": 7,
+    "n_estimators": 450,
+    "learning_rate": 0.017172542103877867,
+    "num_leaves": 40,
+    "min_child_samples": 63,
+    "subsample": 0.7139351238159993,
+    "colsample_bytree": 0.8822634555704315,
+    "reg_lambda": 0.0007122305833333872
+  },
+  "total_trial_compute_time_s": 446.060859,
+  "last_run_compute_time_s": 52.065405299988925
+}
