@@ -134,9 +134,7 @@ def _decode_segment(
     scores = log_emissions[run_rows[0]].copy()
     for step in range(1, len(segment)):
         obs_idx, row_positions = segment[step]
-        observed_distance = _observed_distance(
-            candidates, row_positions, obs_idx
-        )
+        observed_distance = _observed_distance(candidates, row_positions, obs_idx)
         previous_rows = run_rows[-1]
         current_rows = state_rows[step]
         targets_by_source: dict[Any, set[Any]] = {}

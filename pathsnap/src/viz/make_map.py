@@ -14,7 +14,6 @@ import folium
 import numpy as np
 import pandas as pd
 
-
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 REPO_ROOT = PROJECT_ROOT.parent
 DEFAULT_DATA_ROOT = Path(
@@ -73,7 +72,9 @@ def _read_arcs(raw_trip_dir: Path, trip_id: str, repo_root: Path) -> pd.DataFram
             from_nodes = geometry["from_node"].copy()
             to_nodes = geometry["to_node"].copy()
     except (OSError, ValueError) as exc:
-        raise ValueError(f"Could not read map road geometry {geometry_path}: {exc}") from exc
+        raise ValueError(
+            f"Could not read map road geometry {geometry_path}: {exc}"
+        ) from exc
 
     if (
         arc_ids.ndim != 1
@@ -172,16 +173,10 @@ def generate_trip_map(
 
     project_results = root / "pathsnap" / "results"
     label_file = project_results / (
-        "labels_train.parquet"
-        if partition == "train"
-        else "labels_student.parquet"
+        "labels_train.parquet" if partition == "train" else "labels_student.parquet"
     )
     candidate_file = (
-        root
-        / "member1_preprocessing"
-        / "outputs"
-        / "candidates"
-        / f"{trip_id}.csv"
+        root / "member1_preprocessing" / "outputs" / "candidates" / f"{trip_id}.csv"
     )
     raw_trip_dir = dataset_root / partition / trip_id
     track = _read_whitespace(
@@ -200,18 +195,18 @@ def generate_trip_map(
     if not candidate_file.is_file():
         raise FileNotFoundError(f"Missing candidate file: {candidate_file}")
 
-    track[["longitude", "latitude"]] = track[
-        ["longitude", "latitude"]
-    ].apply(pd.to_numeric, errors="raise")
-    nodes[["longitude", "latitude"]] = nodes[
-        ["longitude", "latitude"]
-    ].apply(pd.to_numeric, errors="raise")
-    arcs[["from_node", "to_node"]] = arcs[
-        ["from_node", "to_node"]
-    ].apply(pd.to_numeric, errors="raise").astype(np.int64)
-    route_ids = pd.to_numeric(route["arc_id"], errors="raise").astype(
-        np.int64
-    ).tolist()
+    track[["longitude", "latitude"]] = track[["longitude", "latitude"]].apply(
+        pd.to_numeric, errors="raise"
+    )
+    nodes[["longitude", "latitude"]] = nodes[["longitude", "latitude"]].apply(
+        pd.to_numeric, errors="raise"
+    )
+    arcs[["from_node", "to_node"]] = (
+        arcs[["from_node", "to_node"]]
+        .apply(pd.to_numeric, errors="raise")
+        .astype(np.int64)
+    )
+    route_ids = pd.to_numeric(route["arc_id"], errors="raise").astype(np.int64).tolist()
 
     labels = pd.read_parquet(label_file)
     labels["trip_id"] = labels["trip_id"].map(_trip_id)
@@ -224,32 +219,28 @@ def generate_trip_map(
             f"Trip {trip_id}: label rows ({len(trip_labels)}) do not match "
             f"GPS observations ({len(track)})"
         )
-    if not trip_labels["obs_idx"].reset_index(drop=True).equals(
-        pd.Series(np.arange(len(track)), name="obs_idx")
+    if (
+        not trip_labels["obs_idx"]
+        .reset_index(drop=True)
+        .equals(pd.Series(np.arange(len(track)), name="obs_idx"))
     ):
         raise ValueError(f"Trip {trip_id}: labels are not complete by obs_idx")
 
-    candidates = pd.read_csv(
-        candidate_file, usecols=["obs_idx", "arc_id"]
+    candidates = pd.read_csv(candidate_file, usecols=["obs_idx", "arc_id"])
+    candidates["obs_idx"] = pd.to_numeric(candidates["obs_idx"], errors="raise").astype(
+        np.int64
     )
-    candidates["obs_idx"] = pd.to_numeric(
-        candidates["obs_idx"], errors="raise"
-    ).astype(np.int64)
-    candidates["arc_id"] = pd.to_numeric(
-        candidates["arc_id"], errors="raise"
-    ).astype(np.int64)
+    candidates["arc_id"] = pd.to_numeric(candidates["arc_id"], errors="raise").astype(
+        np.int64
+    )
     candidate_sets = candidates.groupby("obs_idx")["arc_id"].agg(set).to_dict()
 
     labeled_arc_ids = [
-        int(value)
-        for value in trip_labels["true_arc_id"].dropna().unique().tolist()
+        int(value) for value in trip_labels["true_arc_id"].dropna().unique().tolist()
     ]
     reference_segments = _connected_segments(route_ids, nodes, arcs)
     dp_segments = _connected_segments(
-        [
-            int(value)
-            for value in trip_labels["true_arc_id"].dropna().tolist()
-        ],
+        [int(value) for value in trip_labels["true_arc_id"].dropna().tolist()],
         nodes,
         arcs,
     )
@@ -304,15 +295,16 @@ def generate_trip_map(
         ).add_to(dp_group)
     dp_group.add_to(fmap)
 
-    null_indices = trip_labels.loc[
-        trip_labels["true_arc_id"].isna(), "obs_idx"
-    ].astype(int).tolist()
+    null_indices = (
+        trip_labels.loc[trip_labels["true_arc_id"].isna(), "obs_idx"]
+        .astype(int)
+        .tolist()
+    )
     candidate_miss_indices = [
         int(row.obs_idx)
         for row in trip_labels.itertuples(index=False)
         if pd.notna(row.true_arc_id)
-        and int(row.true_arc_id)
-        not in candidate_sets.get(int(row.obs_idx), set())
+        and int(row.true_arc_id) not in candidate_sets.get(int(row.obs_idx), set())
     ]
     marker_group = folium.FeatureGroup(name="Null labels / candidate misses")
     for obs_idx in _marker_indices(
@@ -321,16 +313,13 @@ def generate_trip_map(
         label = trip_labels.loc[trip_labels["obs_idx"].eq(obs_idx)].iloc[0][
             "true_arc_id"
         ]
-        is_miss = (
-            pd.notna(label)
-            and int(label) not in candidate_sets.get(obs_idx, set())
+        is_miss = pd.notna(label) and int(label) not in candidate_sets.get(
+            obs_idx, set()
         )
         status = (
             "Candidate miss"
             if is_miss
-            else "DP null (>100 m)"
-            if pd.isna(label)
-            else "Sampled GPS observation"
+            else "DP null (>100 m)" if pd.isna(label) else "Sampled GPS observation"
         )
         latitude, longitude = gps_coordinates[obs_idx]
         color = "red" if is_miss else "orange" if pd.isna(label) else "blue"
@@ -341,9 +330,7 @@ def generate_trip_map(
             fill=True,
             fill_opacity=0.8,
             popup=folium.Popup(
-                html.escape(
-                    f"obs_idx={obs_idx}; true_arc_id={label}; status={status}"
-                ),
+                html.escape(f"obs_idx={obs_idx}; true_arc_id={label}; status={status}"),
                 max_width=320,
             ),
         ).add_to(marker_group)
@@ -423,9 +410,7 @@ def generate_hmm_trip_map(
     frame["trip_id"] = frame["trip_id"].map(_trip_id)
     if frame["trip_id"].nunique() != 1 or not frame["trip_id"].eq(trip_id).all():
         raise ValueError(f"Predictions do not belong only to trip {trip_id}")
-    frame["obs_idx"] = pd.to_numeric(
-        frame["obs_idx"], errors="raise"
-    ).astype(np.int64)
+    frame["obs_idx"] = pd.to_numeric(frame["obs_idx"], errors="raise").astype(np.int64)
     if frame.duplicated(["trip_id", "obs_idx"]).any():
         raise ValueError(f"Trip {trip_id} has duplicate prediction observations")
     frame = frame.sort_values("obs_idx", kind="stable").reset_index(drop=True)
@@ -449,18 +434,18 @@ def generate_hmm_trip_map(
     if "long_gap" not in frame.columns:
         frame["long_gap"] = False
 
-    track[["longitude", "latitude"]] = track[
-        ["longitude", "latitude"]
-    ].apply(pd.to_numeric, errors="raise")
-    nodes[["longitude", "latitude"]] = nodes[
-        ["longitude", "latitude"]
-    ].apply(pd.to_numeric, errors="raise")
-    arcs[["from_node", "to_node"]] = arcs[
-        ["from_node", "to_node"]
-    ].apply(pd.to_numeric, errors="raise").astype(np.int64)
-    route_ids = pd.to_numeric(route["arc_id"], errors="raise").astype(
-        np.int64
-    ).tolist()
+    track[["longitude", "latitude"]] = track[["longitude", "latitude"]].apply(
+        pd.to_numeric, errors="raise"
+    )
+    nodes[["longitude", "latitude"]] = nodes[["longitude", "latitude"]].apply(
+        pd.to_numeric, errors="raise"
+    )
+    arcs[["from_node", "to_node"]] = (
+        arcs[["from_node", "to_node"]]
+        .apply(pd.to_numeric, errors="raise")
+        .astype(np.int64)
+    )
+    route_ids = pd.to_numeric(route["arc_id"], errors="raise").astype(np.int64).tolist()
     reference_segments = _connected_segments(route_ids, nodes, arcs)
 
     prediction_segments: list[list[int]] = []
@@ -537,17 +522,21 @@ def generate_hmm_trip_map(
         ).add_to(hmm_group)
     hmm_group.add_to(fmap)
 
-    null_indices = frame.loc[
-        frame["hmm_pred_arc_id"].isna(), "obs_idx"
-    ].astype(int).tolist()
+    null_indices = (
+        frame.loc[frame["hmm_pred_arc_id"].isna(), "obs_idx"].astype(int).tolist()
+    )
     disagreement_indices: list[int] = []
     if "classifier_pred_arc_id" in frame.columns:
-        disagreement_indices = frame.loc[
-            frame["classifier_pred_arc_id"].notna()
-            & frame["hmm_pred_arc_id"].notna()
-            & frame["classifier_pred_arc_id"].ne(frame["hmm_pred_arc_id"]),
-            "obs_idx",
-        ].astype(int).tolist()
+        disagreement_indices = (
+            frame.loc[
+                frame["classifier_pred_arc_id"].notna()
+                & frame["hmm_pred_arc_id"].notna()
+                & frame["classifier_pred_arc_id"].ne(frame["hmm_pred_arc_id"]),
+                "obs_idx",
+            ]
+            .astype(int)
+            .tolist()
+        )
     marker_group = folium.FeatureGroup(
         name="Null HMM predictions / classifier disagreements"
     )
@@ -556,16 +545,15 @@ def generate_hmm_trip_map(
     ):
         row = frame.iloc[obs_idx]
         is_null = pd.isna(row["hmm_pred_arc_id"])
-        is_disagreement = (
-            not is_null
-            and obs_idx in disagreement_indices
-        )
+        is_disagreement = not is_null and obs_idx in disagreement_indices
         status = (
             "Null HMM prediction"
             if is_null
-            else "Classifier/HMM disagreement"
-            if is_disagreement
-            else "Sampled GPS observation"
+            else (
+                "Classifier/HMM disagreement"
+                if is_disagreement
+                else "Sampled GPS observation"
+            )
         )
         latitude, longitude = gps_coordinates[obs_idx]
         color = "red" if is_null else "purple" if is_disagreement else "blue"
@@ -609,9 +597,7 @@ def generate_hmm_trip_map(
         "null_hmm_predictions": len(track) - valid_predictions,
         "hmm_route_segments": len(hmm_segments),
         "map_markers": len(
-            _marker_indices(
-                len(track), null_indices, disagreement_indices, max_markers
-            )
+            _marker_indices(len(track), null_indices, disagreement_indices, max_markers)
         ),
         "output_path": str(output_path),
     }
