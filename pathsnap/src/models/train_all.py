@@ -2,6 +2,7 @@
 import argparse
 import json
 import os
+from pathlib import Path
 import numpy as np
 import pandas as pd
 import matplotlib
@@ -16,6 +17,7 @@ from sklearn.ensemble import RandomForestClassifier
 from lightgbm import LGBMClassifier
 
 from .cv import run_experiment
+from .data import load_candidate_tables
 
 SEED = 42
 DEFAULT_FEATURES = ["f_dist", "f_rank", "f_dist_gap", "f_proj", "f_bearing_diff", "f_speed"]
@@ -90,7 +92,51 @@ def main():
     ap.add_argument("--lab-stu", default="results/labels_student.parquet")
     ap.add_argument("--splits", type=int, default=3)
     ap.add_argument("--only", nargs="*", help="run only these model names")
+    ap.add_argument(
+        "--prepare-candidates",
+        action="store_true",
+        help="convert split-listed Member 1 feature CSVs to candidate Parquet tables",
+    )
+    ap.add_argument(
+        "--split-file",
+        type=Path,
+        default=Path("splits.json"),
+        help="train/student split file used by --prepare-candidates",
+    )
+    ap.add_argument(
+        "--feature-dir",
+        type=Path,
+        default=Path("..") / "member1_preprocessing" / "outputs" / "features",
+        help="directory containing Member 1's per-trip feature CSVs",
+    )
+    ap.add_argument(
+        "--overwrite-candidates",
+        action="store_true",
+        help="allow replacing existing candidate Parquet files",
+    )
     args = ap.parse_args()
+
+    if args.prepare_candidates:
+        if args.fake:
+            ap.error("--prepare-candidates cannot be combined with --fake")
+        output_paths = [Path(args.cand_train), Path(args.cand_stu)]
+        existing = [path for path in output_paths if path.exists()]
+        if existing and not args.overwrite_candidates:
+            ap.error(
+                "Candidate outputs already exist; pass --overwrite-candidates to "
+                "replace them: " + ", ".join(str(path) for path in existing)
+            )
+
+        candidates_train, candidates_stu, imputed = load_candidate_tables(
+            args.split_file, args.feature_dir
+        )
+        for path, table in zip(output_paths, (candidates_train, candidates_stu)):
+            path.parent.mkdir(parents=True, exist_ok=True)
+            table.to_parquet(path, index=False)
+            print(f"Wrote {len(table)} rows to {path}")
+        for name, count in sorted(imputed.items()):
+            print(f"Filled {count} missing {name} values with 0.0")
+        return
 
     if args.fake:
         df_train, df_stu = load_fake()
