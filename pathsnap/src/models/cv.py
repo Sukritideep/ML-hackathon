@@ -33,7 +33,8 @@ def run_experiment(name, family, pipe, config, df_train, df_stu, feature_cols,
     # 1) Group-aware cross-validation on the training trips
     oof = np.zeros(len(y))
     for tr, va in GroupKFold(n_splits=n_splits).split(X, y, groups):
-        m = clone(pipe).fit(X.iloc[subsample(tr)], y[subsample(tr)])
+        tr_s = subsample(tr)
+        m = clone(pipe).fit(X.iloc[tr_s], y[tr_s])
         oof[va] = m.predict_proba(X.iloc[va])[:, 1]
     cv = evaluate(df_train, oof)
 
